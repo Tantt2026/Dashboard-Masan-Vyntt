@@ -4735,8 +4735,8 @@ st.markdown(
 <div class="main-header">
     <div class="logo">{logo_svg}</div>
     <div class="title-block">
-        <h1>SƯ ĐOÀN HCM4 - TRUNG ĐOÀN 10</h1>
-        <h2>TRACKING KPI ĐDKD - TEAM SS TRƯƠNG THANH TÂN </h2>
+        <h1>SƯ ĐOÀN HCM4 - TRUNG ĐOÀN 11</h1>
+        <h2>TRACKING KPI ĐDKD - TEAM SS NGUYỄN THỊ TƯỜNG VY </h2>
     </div>
 </div>
 """,
