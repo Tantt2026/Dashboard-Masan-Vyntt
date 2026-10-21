@@ -5171,9 +5171,7 @@ def build_turnover_report(df, report_date, turnover_targets, filter_nv=None):
     _, _, _remain_days, _ = get_timegone_stats(_rd0)
   except Exception:
     _remain_days = 0
-  df_mtd = df[
-      df['date'] >= date(report_date.year, report_date.month, 1)
-  ].copy()
+  df_mtd = df[df['date'] >= date(report_date.year, report_date.month, 1)].copy()
   df_today = df[df['date'] == report_date].copy()
 
   if nv_selected(filter_nv):
@@ -6142,6 +6140,42 @@ def build_vip_mch_chua_mua(mcp_df, filter_nv=None, f_thu_list=None, df_cat=None,
 
 
 
+
+def _weekdays_from_thu_filter(f_thu_list):
+  """Map mã Thứ/chu kỳ → set weekday Python (Mon=0 ... Sun=6).
+  2=T2 ... 7=T7; 25=T2+T5; 36=T3+T6; 47=T4+T7.
+  """
+  mapping = {
+      '2': {0}, '3': {1}, '4': {2}, '5': {3}, '6': {4}, '7': {5},
+      '25': {0, 3}, '36': {1, 4}, '47': {2, 5},
+  }
+  out = set()
+  for t in (f_thu_list or []):
+    out |= mapping.get(str(t).strip(), set())
+  return out
+
+
+def _filter_df_by_thu_weekdays(df, f_thu_list, report_date=None):
+  """Lọc dòng bán hàng theo weekday khớp Thứ/chu kỳ (từ đầu tháng → report_date)."""
+  if df is None or getattr(df, 'empty', True) or not f_thu_list:
+    return df
+  wdays = _weekdays_from_thu_filter(f_thu_list)
+  if not wdays or 'date' not in df.columns:
+    return df
+  d = df.copy()
+  d['_d'] = pd.to_datetime(d['date'], errors='coerce')
+  d = d[d['_d'].notna()]
+  if report_date is not None:
+    try:
+      rd = report_date if isinstance(report_date, date) else pd.Timestamp(report_date).date()
+      start = date(rd.year, rd.month, 1)
+      d = d[(d['_d'].dt.date >= start) & (d['_d'].dt.date <= rd)]
+    except Exception:
+      pass
+  d = d[d['_d'].dt.weekday.isin(wdays)]
+  return d.drop(columns=['_d'], errors='ignore')
+
+
 def build_summary_report(
     df,
     report_date,
@@ -6188,6 +6222,30 @@ def build_summary_report(
   if not mcp_filtered.empty and effective_thu_list:
     c_thu_mcp = find_col(mcp_filtered, ['Thứ', 'Frequency', 'Tần suất'])
     mcp_filtered = filter_by_thu_multi(mcp_filtered, c_thu_mcp, effective_thu_list)
+
+  # CH thuộc Thứ/Chu kỳ đang chọn
+  allowed_ma = set()
+  if effective_thu_list and not mcp_filtered.empty:
+    c_ma_m = find_col(mcp_filtered, ['Outlet_code', 'Outlet Code', 'Mã CH'])
+    if c_ma_m:
+      def _nma(x):
+        s = str(x).strip()
+        return s[:-2] if s.endswith('.0') else s
+      allowed_ma = set(mcp_filtered[c_ma_m].map(_nma).tolist())
+
+  # Data bán hàng: lọc CH theo Thứ + chỉ lấy ngày bán khớp weekday chu kỳ
+  # Trống bộ lọc = full tháng
+  df_kpi = df
+  if effective_thu_list and df is not None and not getattr(df, 'empty', True):
+    df_kpi = df.copy()
+    if allowed_ma:
+      c_ch = find_col(df_kpi, ['Mã CH', 'Outlet_code', 'Outlet Code'])
+      if c_ch:
+        def _nma2(x):
+          s = str(x).strip()
+          return s[:-2] if s.endswith('.0') else s
+        df_kpi = df_kpi[df_kpi[c_ch].map(_nma2).isin(allowed_ma)].copy()
+    df_kpi = _filter_df_by_thu_weekdays(df_kpi, effective_thu_list, report_date)
 
   vip_target_map, vip_actual_map = {}, {}
   if not mcp_filtered.empty:
@@ -6568,9 +6626,64 @@ def build_summary_report(
             pass
 
     # TURNOVER — hàm riêng
+    _mcp_kpi = mcp_filtered if effective_thu_list else mcp_df
+
     try:
-      df_to, _, _ = build_turnover_report(df, report_date, _to_tgt, filter_nv)
-      _apply_kpi_df(df_to, 'CT DS', 'TH DS', '% MTD DS', as_float=False)
+      # CT lấy full tháng (target); TH lấy data đã lọc CH theo Thứ
+      df_to_ct, _, _ = build_turnover_report(df, report_date, _to_tgt, filter_nv)
+      _apply_kpi_df(df_to_ct, 'CT DS', 'TH DS', '% MTD DS', as_float=False)
+      # TH Doanh Số theo Thứ/chu kỳ: tổng DS các ngày khớp weekday
+      # → chia cho số ngày khớp đã trôi qua để ra TH/ngày (cùng đơn vị CT ngày)
+      if effective_thu_list:
+        try:
+          _rd = report_date if isinstance(report_date, date) else pd.Timestamp(report_date).date()
+        except Exception:
+          _rd = report_date
+        wdays = _weekdays_from_thu_filter(effective_thu_list)
+        # số ngày bán (weekday khớp) từ đầu tháng → report_date
+        n_days = 0
+        try:
+          _cur = date(_rd.year, _rd.month, 1)
+          while _cur <= _rd:
+            if _cur.weekday() in wdays:
+              # trừ CN đã loại vì wdays không có 6=Sun; trừ lễ nếu có
+              n_days += 1
+            _cur += timedelta(days=1)
+        except Exception:
+          n_days = 1
+        n_days = max(n_days, 1)
+
+        df_to_th, _, _ = build_turnover_report(df_kpi, report_date, _to_tgt, filter_nv)
+        if df_to_th is not None and not df_to_th.empty:
+          name_col = 'Tên NVBH' if 'Tên NVBH' in df_to_th.columns else None
+          mtd_col = 'Doanh Số MTD' if 'Doanh Số MTD' in df_to_th.columns else None
+          if name_col and mtd_col:
+            body = df_to_th[~df_to_th[name_col].astype(str).str.upper().str.contains(
+                'TOTAL|TỔNG', na=False, regex=True
+            )]
+            name_to_idx = {
+                ' '.join(str(v).strip().lower().split()): i
+                for i, v in df_out['Tên NV'].astype(str).items()
+            }
+            for _, kr in body.iterrows():
+              nm = ' '.join(str(kr[name_col]).strip().lower().split())
+              if nm not in name_to_idx:
+                continue
+              idx = name_to_idx[nm]
+              try:
+                th_sum = float(kr[mtd_col])
+              except Exception:
+                th_sum = 0.0
+              th_day = th_sum / n_days
+              df_out.at[idx, 'TH DS'] = int(round(th_day))
+              try:
+                ct = float(df_out.at[idx, 'CT DS'])
+                # CT lúc này vẫn là tháng; CT ngày apply sau — tạm % theo tháng CT
+                df_out.at[idx, '% MTD DS'] = (
+                    f'{round(th_day / ct * 100, 1)}%' if ct else '0%'
+                )
+              except Exception:
+                pass
     except Exception:
       pass
 
@@ -6582,7 +6695,7 @@ def build_summary_report(
     ]:
       try:
         df_k, _, _ = build_report(
-            df, report_date, targets, rt, filter_nv, mcp_df=mcp_df
+            df_kpi, report_date, targets, rt, filter_nv, mcp_df=_mcp_kpi
         )
         _apply_kpi_df(df_k, c_ct, c_th, c_pct, as_float=as_f)
       except Exception:
@@ -6591,7 +6704,7 @@ def build_summary_report(
     # ---- LPPC riêng: map chắc chắn CT/TH/% ----
     try:
       df_lppc, _, _ = build_report(
-          df, report_date, targets, 'LPPC', filter_nv, mcp_df=mcp_df
+          df_kpi, report_date, targets, 'LPPC', filter_nv, mcp_df=_mcp_kpi
       )
       if df_lppc is not None and not df_lppc.empty:
         name_col = 'Tên NVBH' if 'Tên NVBH' in df_lppc.columns else None
@@ -6636,6 +6749,41 @@ def build_summary_report(
               df_out.at[i, '% MTD LPPC'] = pct
     except Exception:
       pass
+
+    # Khi lọc Thứ/Chu kỳ: CT ngày = CT tháng / số ngày làm việc tháng
+    # (Doanh Số, PC BT, ASO Xanh/Vàng, PC ON). LPPC giữ mốc lương.
+    # TH = data đã lọc CH theo Thứ. VIP/Combo/MBS đã lọc theo Thứ sẵn.
+    if effective_thu_list:
+      try:
+        _rd = report_date if isinstance(report_date, date) else pd.Timestamp(report_date).date()
+        _wd, _, _, _ = get_timegone_stats(_rd)
+        _wd = int(_wd or 0)
+      except Exception:
+        _wd = 0
+      if _wd > 0:
+        _ct_day_cols = [
+            ('CT DS', 'TH DS', '% MTD DS', False),
+            ('CT PC_BT', 'TH PC_BT', '% MTD PC_BT', False),
+            ('CT Xanh', 'TH Xanh', '% MTD Xanh', False),
+            ('CT Vàng', 'TH Vàng', '% MTD Vàng', False),
+            ('CT PC_ON', 'TH PC_ON', '% MTD PC_ON', False),
+        ]
+        for i, row in df_out.iterrows():
+          for c_ct, c_th, c_pct, as_f in _ct_day_cols:
+            try:
+              ct_month = float(row.get(c_ct, 0) or 0)
+              th0 = float(row.get(c_th, 0) or 0)
+              ct_day = ct_month / _wd
+              if as_f:
+                df_out.at[i, c_ct] = round(ct_day, 2)
+              else:
+                df_out.at[i, c_ct] = int(round(ct_day))
+              ct_use = float(df_out.at[i, c_ct])
+              df_out.at[i, c_pct] = (
+                  f'{round(th0 / ct_use * 100, 1)}%' if ct_use else '0%'
+              )
+            except Exception:
+              pass
 
     tot_v_tgt = int(df_out['VIP MCH'].sum())
     tot_v_act = int(df_out['Đã Mua (VIP)'].sum())
@@ -7848,6 +7996,38 @@ def build_performance_report(
     aso_v_mid = _count_aso_dh(d_mid, pat_v)
     ct_x, ct_v = 5, 3
 
+    # Combo OFF/ON theo ngày (cùng rule Báo Cáo ĐH Combo)
+    ct_combo_off, ct_combo_on = 5, 3
+    th_combo_off, th_combo_on = 0, 0
+    try:
+      _combo_day = tag_combo_orders_t10(d_nv, mcp_df=df_mcp) if not d_nv.empty else pd.DataFrame()
+      if _combo_day is not None and not _combo_day.empty:
+        if 'Mã đơn hàng' not in _combo_day.columns:
+          for _c in ['Order No', 'OrderNo', 'Số đơn', 'Order ID', 'Mã ĐH', 'Doc No']:
+            if _c in _combo_day.columns:
+              _combo_day['Mã đơn hàng'] = _combo_day[_c].astype(str)
+              break
+        if 'channel' not in _combo_day.columns:
+          _combo_day['channel'] = 'OFF'
+        _ch = _combo_day['channel'].astype(str).str.upper()
+        if 'Mã đơn hàng' in _combo_day.columns:
+          th_combo_off = int(
+              _combo_day.loc[_ch.str.contains('OFF', na=False), 'Mã đơn hàng'].nunique()
+          )
+          th_combo_on = int(
+              _combo_day.loc[
+                  _ch.str.contains('ON', na=False) & ~_ch.str.contains('OFF', na=False),
+                  'Mã đơn hàng',
+              ].nunique()
+          )
+        else:
+          th_combo_off = int((_ch.str.contains('OFF', na=False)).sum())
+          th_combo_on = int(
+              (_ch.str.contains('ON', na=False) & ~_ch.str.contains('OFF', na=False)).sum()
+          )
+    except Exception:
+      th_combo_off, th_combo_on = 0, 0
+
     # ----- Chỉ số giữa ngày (RPT < 13h) -----
     d_mid_off = (
         d_mid[d_mid['_ma'].map(lambda m: not _is_on(m))]
@@ -7990,6 +8170,12 @@ def build_performance_report(
         'CT Vàng': ct_v,
         'TH Vàng': aso_v,
         '% TH Vàng': f'{round(aso_v / ct_v * 100, 1)}%',
+        'CT Combo OFF': ct_combo_off,
+        'TH Combo OFF': th_combo_off,
+        '% TH Combo OFF': f'{round(th_combo_off / ct_combo_off * 100, 1) if ct_combo_off else 0}%',
+        'CT Combo ON': ct_combo_on,
+        'TH Combo ON': th_combo_on,
+        '% TH Combo ON': f'{round(th_combo_on / ct_combo_on * 100, 1) if ct_combo_on else 0}%',
         'Số CH TB PER': int(_tb_per_map.get(nv_name, 0) or 0),
         'Chụp hình bởi ĐDKD': int(_tb_chup_map.get(nv_name, 0) or 0),
         '% TH TB': (
@@ -8037,6 +8223,8 @@ def build_performance_report(
   tot_ct, tot_th = _sum('CT Ngày SO'), _sum('TH SO')
   tot_cx, tot_tx = _sum('CT Xanh'), _sum('TH Xanh')
   tot_cv, tot_tv = _sum('CT Vàng'), _sum('TH Vàng')
+  tot_c_off, tot_th_c_off = _sum('CT Combo OFF'), _sum('TH Combo OFF')
+  tot_c_on, tot_th_c_on = _sum('CT Combo ON'), _sum('TH Combo ON')
   total = {
       'STT': '-',
       'Mã NVBH': 'TỔNG CỘNG',
@@ -8070,6 +8258,12 @@ def build_performance_report(
       'CT Vàng': tot_cv,
       'TH Vàng': tot_tv,
       '% TH Vàng': f'{round(tot_tv / tot_cv * 100, 1) if tot_cv else 0}%',
+      'CT Combo OFF': tot_c_off,
+      'TH Combo OFF': tot_th_c_off,
+      '% TH Combo OFF': f'{round(tot_th_c_off / tot_c_off * 100, 1) if tot_c_off else 0}%',
+      'CT Combo ON': tot_c_on,
+      'TH Combo ON': tot_th_c_on,
+      '% TH Combo ON': f'{round(tot_th_c_on / tot_c_on * 100, 1) if tot_c_on else 0}%',
       'Số CH TB PER': _sum('Số CH TB PER'),
       'Chụp hình bởi ĐDKD': _sum('Chụp hình bởi ĐDKD'),
       '% TH TB': (
@@ -8130,6 +8324,16 @@ def _perf_table_html(df, section='call'):
             ('CT Vàng', 'CT Ngày'),
             ('TH Vàng', 'TH'),
             ('% TH Vàng', '% TH'),
+        ]),
+        ('ĐH Combo Kênh OFF', [
+            ('CT Combo OFF', 'CT Ngày'),
+            ('TH Combo OFF', 'TH'),
+            ('% TH Combo OFF', '% TH'),
+        ]),
+        ('ĐH Combo Kênh ON', [
+            ('CT Combo ON', 'CT Ngày'),
+            ('TH Combo ON', 'TH'),
+            ('% TH Combo ON', '% TH'),
         ]),
         ('Kỷ Luật Bán Hàng', [
             ('Số CH TB PER', 'Số CH TB PER'),
@@ -8205,10 +8409,10 @@ def _perf_table_html(df, section='call'):
   if section == 'call':
     html.append(f'<th colspan="{n_data}" style="{th_top}">Call Plan</th>')
   else:
-    # Fundamental = SellOut + ASO Xanh + ASO Vàng (9)
+    # Fundamental = SellOut + ASO Xanh + ASO Vàng + Combo OFF/ON (15)
     # Kỷ Luật Bán Hàng: rowspan=2 gộp 2 dòng tiêu đề thành 1 ô
     # Đề xuất & Đánh Giá = Giữa + Cuối (2)
-    html.append(f'<th colspan="9" style="{th_top}">Fundamental</th>')
+    html.append(f'<th colspan="15" style="{th_top}">Fundamental</th>')
     html.append(
         f'<th colspan="3" rowspan="2" style="{th_top}">Kỷ Luật Bán Hàng</th>'
     )
@@ -14187,6 +14391,8 @@ with tab_kpi:
                 ('% TH SO', '% TH SO'),
                 ('% TH Xanh', '% TH Xanh'),
                 ('% TH Vàng', '% TH Vàng'),
+                ('% TH Combo OFF', '% TH Combo OFF'),
+                ('% TH Combo ON', '% TH Combo ON'),
                 ('% TH TB', '% TH TB'),
             ]
             labels, values, hover, is_lppc = [], [], [], []
