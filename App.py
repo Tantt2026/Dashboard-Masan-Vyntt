@@ -13072,28 +13072,85 @@ def render_hs_daily_metric_cards(df_perf, report_date, lppc_moc=4.3, aso_off=Non
   ao_ct = int(ao.get('ct_day', 0) or ao.get('ct', 0) or 0)
   an_ct = int(an.get('ct_day', 0) or an.get('ct', 0) or 0)
 
-  # 10 cards — màu tương phản
+  # 10 cards — format TH/CT/%TH (ASO ALL: TH/MTD/CT/%TH)
+  pct_lppc = (lppc / lppc_moc * 100) if lppc_moc else 0
+  pct_x = (th_x / ct_x * 100) if ct_x else 0
+  pct_v = (th_v / ct_v * 100) if ct_v else 0
+  pct_co = (th_co / ct_co * 100) if ct_co else 0
+  pct_cn = (th_cn / ct_cn * 100) if ct_cn else 0
+  # ASO ALL: % = MTD/CT
+  pct_ao = (ao_mtd / ao_ct * 100) if ao_ct else 0
+  pct_an = (an_mtd / an_ct * 100) if an_ct else 0
+
+  def _fmt_trieu(n):
+    """Chỉ số triệu, không gắn chữ 'tr' (đơn vị nằm ở tiêu đề)."""
+    try:
+      n = float(n or 0) / 1_000_000.0
+      return f'{n:,.1f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
+    except Exception:
+      return '0'
+
   cards = [
-    ('DOANH SỐ NGÀY', _fmt_tr(th_so), f'BQ cần {_fmt_tr(ct_so)}/ngày · đạt {pct_so:.0f}%', '#e53e3e'),
-    ('PC BT / PC OFF', f'{int(pc_off)}/{int(plan_off)} CALLS', f'Tỷ lệ chốt đơn {pct_pc_off:.0f}%', '#3182ce'),
-    ('PC ON', f'{int(pc_on)}/{int(plan_on)} CALLS', f'Tỷ lệ chốt đơn {pct_pc_on:.0f}%', '#dd6b20'),
-    ('LPPC OFF', f'{lppc:.2f}'.replace('.', ','), f'Target {lppc_moc} · {"vượt" if lppc >= lppc_moc else "chưa đạt"}', '#38a169'),
+    (
+      'DOANH SỐ NGÀY (Triệu đồng)',
+      f'{_fmt_trieu(th_so)}/{_fmt_trieu(ct_so)}/{pct_so:.0f}%',
+      'TH/CT/%TH',
+      '#e53e3e',
+    ),
+    (
+      'PC BT / PC OFF',
+      f'{int(pc_off)}/{int(plan_off)}/{pct_pc_off:.0f}%',
+      'TH/CT/%TH',
+      '#3182ce',
+    ),
+    (
+      'PC ON',
+      f'{int(pc_on)}/{int(plan_on)}/{pct_pc_on:.0f}%',
+      'TH/CT/%TH',
+      '#dd6b20',
+    ),
+    (
+      'LPPC OFF',
+      f'{lppc:.2f}'.replace('.', ',') + f'/{str(lppc_moc).replace(".", ",")}/{pct_lppc:.0f}%',
+      'TH/CT/%TH',
+      '#38a169',
+    ),
     (
       'ASO ALL OFF',
-      f'{ao_th}/{ao_mtd}/{ao_ct}',
-      f'TH ngày/MTD/CT · Đạt {ao_mtd/ao_ct*100:.0f}%' if ao_ct else 'TH ngày/MTD/CT',
+      f'{ao_th}/{ao_mtd}/{ao_ct}/{pct_ao:.0f}%',
+      'TH ngày/MTD/CT/%MTD',
       '#805ad5',
     ),
     (
       'ASO ALL ON',
-      f'{an_th}/{an_mtd}/{an_ct}',
-      f'TH ngày/MTD/CT · Đạt {an_mtd/an_ct*100:.0f}%' if an_ct else 'TH ngày/MTD/CT',
+      f'{an_th}/{an_mtd}/{an_ct}/{pct_an:.0f}%',
+      'TH ngày/MTD/CT/%MTD',
       '#d53f8c',
     ),
-    ('ASO TRẬN XANH', f'{int(th_x)}/{int(ct_x)}', f'Đạt {th_x/ct_x*100:.0f}%' if ct_x else '0%', '#319795'),
-    ('ASO TRẬN VÀNG', f'{int(th_v)}/{int(ct_v)}', f'Đạt {th_v/ct_v*100:.0f}%' if ct_v else '0%', '#d69e2e'),
-    ('COMBO OFF', f'{int(th_co)}/{int(ct_co)} suất', f'Đạt {th_co/ct_co*100:.0f}%' if ct_co else '0%', '#2b6cb0'),
-    ('COMBO ON', f'{int(th_cn)}/{int(ct_cn)} suất', f'Đạt {th_cn/ct_cn*100:.0f}%' if ct_cn else '0%', '#c05621'),
+    (
+      'ASO TRẬN XANH',
+      f'{int(th_x)}/{int(ct_x)}/{pct_x:.0f}%',
+      'TH/CT/%TH',
+      '#319795',
+    ),
+    (
+      'ASO TRẬN VÀNG',
+      f'{int(th_v)}/{int(ct_v)}/{pct_v:.0f}%',
+      'TH/CT/%TH',
+      '#d69e2e',
+    ),
+    (
+      'COMBO OFF',
+      f'{int(th_co)}/{int(ct_co)}/{pct_co:.0f}%',
+      'TH/CT/%TH',
+      '#2b6cb0',
+    ),
+    (
+      'COMBO ON',
+      f'{int(th_cn)}/{int(ct_cn)}/{pct_cn:.0f}%',
+      'TH/CT/%TH',
+      '#c05621',
+    ),
   ]
 
   wd = report_date.strftime('%d/%m') if hasattr(report_date, 'strftime') else str(report_date)
